@@ -104,11 +104,12 @@ module.exports = class AwsS3 extends Plugin {
 
     const getUploadParameters = this.limitRequests(this.opts.getUploadParameters)
 
+    const controller = new AbortController()
     return Promise.all(
       fileIDs.map((id) => {
         const file = this.uppy.getFile(id)
         const paramsPromise = Promise.resolve()
-          .then(() => getUploadParameters(file))
+          .then(() => getUploadParameters(file, { signal: controller.signal }))
         return paramsPromise.then((params) => {
           return this.validateParameters(file, params)
         }).then((params) => {

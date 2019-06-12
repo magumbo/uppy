@@ -7,6 +7,8 @@ const getSocketHost = require('@uppy/utils/lib/getSocketHost')
 const settle = require('@uppy/utils/lib/settle')
 const limitPromises = require('@uppy/utils/lib/limitPromises')
 
+class AbortError extends Error {}
+
 function buildResponseError (xhr, error) {
   // No error message
   if (!error) error = new Error('Upload error')
@@ -110,6 +112,7 @@ module.exports = class XHRUpload extends Plugin {
 
     this.handleUpload = this.handleUpload.bind(this)
 
+    this.cancellation = Object.create(null)
     // Simultaneous upload limiting is shared across all uploads with this plugin.
     if (typeof this.opts.limit === 'number' && this.opts.limit !== 0) {
       this.limitUploads = limitPromises(this.opts.limit)
@@ -235,11 +238,15 @@ module.exports = class XHRUpload extends Plugin {
     return file.data
   }
 
-  upload (file, current, total) {
+  upload (file, current, total, { signal }) {
     const opts = this.getOptions(file)
 
     this.uppy.log(`uploading ${current} of ${total}`)
     return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        return reject(new AbortError('Aborted'))
+      }
+
       const data = opts.formData
         ? this.createFormDataUpload(file, opts)
         : this.createBareUpload(file, opts)
@@ -347,9 +354,13 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadRemote (file, current, total) {
+  uploadRemote (file, current, total, { signal }) {
     const opts = this.getOptions(file)
     return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        return reject(new AbortError('Aborted'))
+      }
+
       const fields = {}
       const metaFields = Array.isArray(opts.metaFields)
         ? opts.metaFields
@@ -403,8 +414,12 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadBundle (files) {
+  uploadBundle (files, { signal }) {
     return new Promise((resolve, reject) => {
+      if (signal.aborted) {
+        return reject(new AbortError('Aborted'))
+      }
+
       const endpoint = this.opts.endpoint
       const method = this.opts.method
 
@@ -501,7 +516,7 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadFiles (files) {
+  uploadFiles (files, { signal }) {
     const actions = files.map((file, i) => {
       const current = parseInt(i, 10) + 1
       const total = files.length
@@ -512,10 +527,10 @@ module.exports = class XHRUpload extends Plugin {
         // We emit upload-started here, so that it's also emitted for files
         // that have to wait due to the `limit` option.
         this.uppy.emit('upload-started', file)
-        return this.uploadRemote.bind(this, file, current, total)
+        return this.uploadRemote.bind(this, file, current, total, { signal })
       } else {
         this.uppy.emit('upload-started', file)
-        return this.upload.bind(this, file, current, total)
+        return this.upload.bind(this, file, current, total, { signal })
       }
     })
 
@@ -527,7 +542,7 @@ module.exports = class XHRUpload extends Plugin {
     return settle(promises)
   }
 
-  handleUpload (fileIDs) {
+  handleUpload (fileIDs, uploadID) {
     if (fileIDs.length === 0) {
       this.uppy.log('[XHRUpload] No files to upload!')
       return Promise.resolve()
@@ -536,11 +551,23 @@ module.exports = class XHRUpload extends Plugin {
     this.uppy.log('[XHRUpload] Uploading...')
     const files = fileIDs.map((fileID) => this.uppy.getFile(fileID))
 
+    this.cancellation[uploadID] = new AbortController()
+    const { signal } = this.cancellation[uploadID]
+
+    let promise
     if (this.opts.bundle) {
-      return this.uploadBundle(files)
+      promise = this.uploadBundle(files, { signal })
+    } else {
+      promise = this.uploadFiles(files, { signal })
     }
 
-    return this.uploadFiles(files).then(() => null)
+    return promise.then(() => {
+      delete this.cancellation[uploadID]
+      return null
+    }, (err) => {
+      delete this.cancellation[uploadID]
+      throw err
+    })
   }
 
   install () {
