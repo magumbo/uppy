@@ -39,6 +39,6 @@ exports.config = Object.assign(base.config, {
   mochaOpts: {
     ui: 'bdd',
     reporter: 'dot',
-    timeout: 60000
+    timeout: 120000
   }
 })
