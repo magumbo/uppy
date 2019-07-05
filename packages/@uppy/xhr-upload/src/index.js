@@ -7,7 +7,9 @@ const getSocketHost = require('@uppy/utils/lib/getSocketHost')
 const settle = require('@uppy/utils/lib/settle')
 const limitPromises = require('@uppy/utils/lib/limitPromises')
 
-class AbortError extends Error {}
+class AbortError extends Error {
+  name = 'AbortError'
+}
 
 function buildResponseError (xhr, error) {
   // No error message
