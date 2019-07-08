@@ -1,4 +1,5 @@
 const resolveUrl = require('resolve-url')
+const { AbortController } = require('abortcontroller-polyfill/dist/cjs-ponyfill')
 const { Plugin } = require('@uppy/core')
 const Translator = require('@uppy/utils/lib/Translator')
 const limitPromises = require('@uppy/utils/lib/limitPromises')
@@ -66,14 +67,14 @@ module.exports = class AwsS3 extends Plugin {
     }
   }
 
-  getUploadParameters (file) {
+  getUploadParameters (file, opts) {
     if (!this.opts.companionUrl) {
       throw new Error('Expected a `companionUrl` option containing a Companion address.')
     }
 
     const filename = encodeURIComponent(file.meta.name)
     const type = encodeURIComponent(file.meta.type)
-    return this.client.get(`s3/params?filename=${filename}&type=${type}`)
+    return this.client.get(`s3/params?filename=${filename}&type=${type}`, { signal: opts.signal })
       .then(assertServerError)
   }
 
@@ -148,16 +149,21 @@ module.exports = class AwsS3 extends Plugin {
           xhrOpts.headers = headers
         }
 
-        const updatedFile = Object.assign({}, file, {
-          meta: Object.assign({}, file.meta, fields),
+        const updatedFile = {
+          ...file,
+          meta: {
+            ...file.meta,
+            ...fields
+          },
           xhrUpload: xhrOpts
-        })
+        }
 
         updatedFiles[id] = updatedFile
       })
 
+      const { files } = this.uppy.getState()
       this.uppy.setState({
-        files: Object.assign({}, this.uppy.getState().files, updatedFiles)
+        files: { ...files, ...updatedFiles }
       })
 
       fileIDs.forEach((id) => {

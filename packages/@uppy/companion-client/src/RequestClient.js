@@ -38,9 +38,9 @@ module.exports = class RequestClient {
     )
   }
 
-  _getPostResponseFunc (skip) {
+  _getPostResponseFunc (opts) {
     return (response) => {
-      if (!skip) {
+      if (!opts.skipPostResponse) {
         return this.onReceiveResponse(response)
       }
 
@@ -64,6 +64,14 @@ module.exports = class RequestClient {
     return response
   }
 
+  // Handle old request options style
+  _getOptions (opts) {
+    if (typeof opts === 'boolean') {
+      return { skipPostResponse: opts }
+    }
+    return opts
+  }
+
   _getUrl (url) {
     if (/^(https?:|)\/\//.test(url)) {
       return url
@@ -82,14 +90,15 @@ module.exports = class RequestClient {
     return res.json()
   }
 
-  preflight (path) {
+  preflight (path, { signal }) {
     return new Promise((resolve, reject) => {
       if (this.preflightDone) {
         return resolve(this.allowedHeaders.slice())
       }
 
       fetch(this._getUrl(path), {
-        method: 'OPTIONS'
+        method: 'OPTIONS',
+        signal
       })
         .then((response) => {
           if (response.headers.has('access-control-allow-headers')) {
@@ -107,8 +116,8 @@ module.exports = class RequestClient {
     })
   }
 
-  preflightAndHeaders (path) {
-    return Promise.all([this.preflight(path), this.headers()])
+  preflightAndHeaders (path, opts) {
+    return Promise.all([this.preflight(path, opts), this.headers()])
       .then(([allowedHeaders, headers]) => {
         // filter to keep only allowed Headers
         Object.keys(headers).forEach((header) => {
@@ -122,15 +131,17 @@ module.exports = class RequestClient {
       })
   }
 
-  get (path, skipPostResponse) {
+  get (path, opts = {}) {
+    opts = this._getOptions(opts)
     return new Promise((resolve, reject) => {
-      this.preflightAndHeaders(path).then((headers) => {
+      this.preflightAndHeaders(path, opts).then((headers) => {
         fetch(this._getUrl(path), {
           method: 'get',
           headers: headers,
-          credentials: 'same-origin'
+          credentials: 'same-origin',
+          signal: opts.signal
         })
-          .then(this._getPostResponseFunc(skipPostResponse))
+          .then(this._getPostResponseFunc(opts))
           .then((res) => this._json(res).then(resolve))
           .catch((err) => {
             err = err.isAuthError ? err : new Error(`Could not get ${this._getUrl(path)}. ${err}`)
@@ -140,16 +151,18 @@ module.exports = class RequestClient {
     })
   }
 
-  post (path, data, skipPostResponse) {
+  post (path, data, opts = {}) {
+    opts = this._getOptions(opts)
     return new Promise((resolve, reject) => {
-      this.preflightAndHeaders(path).then((headers) => {
+      this.preflightAndHeaders(path, opts).then((headers) => {
         fetch(this._getUrl(path), {
           method: 'post',
           headers: headers,
           credentials: 'same-origin',
+          signal: opts.signal,
           body: JSON.stringify(data)
         })
-          .then(this._getPostResponseFunc(skipPostResponse))
+          .then(this._getPostResponseFunc(opts))
           .then((res) => this._json(res).then(resolve))
           .catch((err) => {
             err = err.isAuthError ? err : new Error(`Could not post ${this._getUrl(path)}. ${err}`)
@@ -159,16 +172,18 @@ module.exports = class RequestClient {
     })
   }
 
-  delete (path, data, skipPostResponse) {
+  delete (path, data, opts = {}) {
+    opts = this._getOptions(opts)
     return new Promise((resolve, reject) => {
-      this.preflightAndHeaders(path).then((headers) => {
+      this.preflightAndHeaders(path, opts).then((headers) => {
         fetch(`${this.hostname}/${path}`, {
           method: 'delete',
           headers: headers,
           credentials: 'same-origin',
+          signal: opts.signal,
           body: data ? JSON.stringify(data) : null
         })
-          .then(this._getPostResponseFunc(skipPostResponse))
+          .then(this._getPostResponseFunc(opts))
           .then((res) => this._json(res).then(resolve))
           .catch((err) => {
             err = err.isAuthError ? err : new Error(`Could not delete ${this._getUrl(path)}. ${err}`)

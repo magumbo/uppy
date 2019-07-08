@@ -1,3 +1,5 @@
+const AbortError = require('./AbortError')
+
 /**
  * Limit the amount of simultaneously pending Promises.
  * Returns a function that, when passed a function `fn`,
@@ -20,8 +22,18 @@ module.exports = function limitPromises (limit) {
 
       if (pending >= limit) {
         return new Promise((resolve, reject) => {
+          let signal
+          const lastArg = args[args.length - 1]
+          if (typeof lastArg === 'object' && lastArg && lastArg.signal) {
+            signal = lastArg.signal
+          }
+
           queue.push(() => {
-            call().then(resolve, reject)
+            if (signal && signal.aborted) {
+              reject(new AbortError())
+            } else {
+              call().then(resolve, reject)
+            }
           })
         })
       }

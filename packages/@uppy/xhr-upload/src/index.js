@@ -1,4 +1,5 @@
 const { Plugin } = require('@uppy/core')
+const { AbortController } = require('abortcontroller-polyfill/dist/cjs-ponyfill')
 const cuid = require('cuid')
 const Translator = require('@uppy/utils/lib/Translator')
 const { Provider, RequestClient, Socket } = require('@uppy/companion-client')
@@ -6,10 +7,7 @@ const emitSocketProgress = require('@uppy/utils/lib/emitSocketProgress')
 const getSocketHost = require('@uppy/utils/lib/getSocketHost')
 const settle = require('@uppy/utils/lib/settle')
 const limitPromises = require('@uppy/utils/lib/limitPromises')
-
-class AbortError extends Error {
-  name = 'AbortError'
-}
+const AbortError = require('@uppy/utils/lib/AbortError')
 
 function buildResponseError (xhr, error) {
   // No error message
@@ -246,7 +244,7 @@ module.exports = class XHRUpload extends Plugin {
     this.uppy.log(`uploading ${current} of ${total}`)
     return new Promise((resolve, reject) => {
       if (signal.aborted) {
-        return reject(new AbortError('Aborted'))
+        return reject(new AbortError('Upload was cancelled'))
       }
 
       const data = opts.formData
@@ -339,25 +337,12 @@ module.exports = class XHRUpload extends Plugin {
       })
 
       xhr.send(data)
-
-      this.uppy.on('file-removed', (removedFile) => {
-        if (removedFile.id === file.id) {
-          timer.done()
-          xhr.abort()
-          reject(new Error('File removed'))
-        }
-      })
-
-      this.uppy.on('cancel-all', () => {
-        timer.done()
-        xhr.abort()
-        reject(new Error('Upload cancelled'))
-      })
     })
   }
 
-  uploadRemote (file, current, total, { signal }) {
+  uploadRemote (file, current, total, controller) {
     const opts = this.getOptions(file)
+    const { signal } = controller
     return new Promise((resolve, reject) => {
       if (signal.aborted) {
         return reject(new AbortError('Aborted'))
@@ -416,12 +401,8 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadBundle (files, { signal }) {
+  uploadBundle (files) {
     return new Promise((resolve, reject) => {
-      if (signal.aborted) {
-        return reject(new AbortError('Aborted'))
-      }
-
       const endpoint = this.opts.endpoint
       const method = this.opts.method
 
@@ -518,21 +499,57 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadFiles (files, { signal }) {
+  uploadFiles (files) {
     const actions = files.map((file, i) => {
       const current = parseInt(i, 10) + 1
       const total = files.length
 
       if (file.error) {
         return () => Promise.reject(new Error(file.error))
-      } else if (file.isRemote) {
+      }
+
+      // Set up upload cancellation
+      const controller = new AbortController()
+      const { signal } = controller
+
+      const onFileRemoved = (removedFile) => {
+        if (removedFile.id === file.id) {
+          controller.abort()
+        }
+      }
+      const onCancelAll = () => {
+        controller.abort()
+      }
+      this.uppy.on('file-removed', onFileRemoved)
+      this.uppy.on('cancel-all', onCancelAll)
+
+      const removeCancellationListeners = () => {
+        this.uppy.off('file-removed', onFileRemoved)
+        this.uppy.off('cancel-all', onCancelAll)
+      }
+      const onUploadSuccess = (val) => {
+        removeCancellationListeners()
+        return val
+      }
+      const onUploadError = (err) => {
+        removeCancellationListeners()
+        throw err
+      }
+
+      if (file.isRemote) {
         // We emit upload-started here, so that it's also emitted for files
         // that have to wait due to the `limit` option.
         this.uppy.emit('upload-started', file)
-        return this.uploadRemote.bind(this, file, current, total, { signal })
+        return () => {
+          return this.uploadRemote(file, current, total, { signal })
+            .then(onUploadSuccess, onUploadError)
+        }
       } else {
         this.uppy.emit('upload-started', file)
-        return this.upload.bind(this, file, current, total, { signal })
+        return () => {
+          return this.upload(file, current, total, { signal })
+            .then(onUploadSuccess, onUploadError)
+        }
       }
     })
 
@@ -553,23 +570,14 @@ module.exports = class XHRUpload extends Plugin {
     this.uppy.log('[XHRUpload] Uploading...')
     const files = fileIDs.map((fileID) => this.uppy.getFile(fileID))
 
-    this.cancellation[uploadID] = new AbortController()
-    const { signal } = this.cancellation[uploadID]
-
     let promise
     if (this.opts.bundle) {
-      promise = this.uploadBundle(files, { signal })
+      promise = this.uploadBundle(files)
     } else {
-      promise = this.uploadFiles(files, { signal })
+      promise = this.uploadFiles(files)
     }
 
-    return promise.then(() => {
-      delete this.cancellation[uploadID]
-      return null
-    }, (err) => {
-      delete this.cancellation[uploadID]
-      throw err
-    })
+    return promise
   }
 
   install () {
