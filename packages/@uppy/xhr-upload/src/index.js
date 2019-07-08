@@ -247,6 +247,14 @@ module.exports = class XHRUpload extends Plugin {
         return reject(new AbortError('Upload was cancelled'))
       }
 
+      const onabort = () => {
+        timer.done()
+        xhr.abort()
+
+        reject(new AbortError('Upload was cancelled'))
+      }
+      signal.addEventListener('abort', onabort)
+
       const data = opts.formData
         ? this.createFormDataUpload(file, opts)
         : this.createBareUpload(file, opts)
@@ -340,9 +348,8 @@ module.exports = class XHRUpload extends Plugin {
     })
   }
 
-  uploadRemote (file, current, total, controller) {
+  uploadRemote (file, current, total, { signal }) {
     const opts = this.getOptions(file)
-    const { signal } = controller
     return new Promise((resolve, reject) => {
       if (signal.aborted) {
         return reject(new AbortError('Aborted'))
